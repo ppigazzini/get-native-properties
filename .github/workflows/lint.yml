@@ -1,0 +1,97 @@
+name: CI lint
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  shellcheck:
+    name: Shell lint (shellcheck)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install shellcheck
+        run: |
+          sudo apt update
+          sudo apt install -y --no-install-recommends shellcheck
+
+      - name: Validate shell scripts
+        run: |
+          sh -n scripts/get_native_properties.sh
+          shellcheck --severity=warning scripts/get_native_properties.sh
+
+  ruff:
+    name: Ruff (python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.14"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      - name: Ruff lint
+        uses: astral-sh/ruff-action@v3
+        id: ruff-lint
+        continue-on-error: true
+        with:
+          args: "check"
+
+      - name: Ruff lint statistics
+        uses: astral-sh/ruff-action@v3
+        id: ruff-lint-statistics
+        continue-on-error: true
+        with:
+          args: "check --output-format full --statistics"
+
+      - name: Ruff sort (import order)
+        uses: astral-sh/ruff-action@v3
+        id: ruff-sort
+        continue-on-error: true
+        with:
+          args: "check --select I"
+
+      - name: Ruff format
+        uses: astral-sh/ruff-action@v3
+        id: ruff-format
+        continue-on-error: true
+        with:
+          args: "format --check"
+
+      - name: Check linters and formatters status
+        run: |
+          if [[ "${{ steps.ruff-lint.outcome }}" == "success" ]]; then echo "lint: ok"; else echo "lint: fail"; fi
+          if [[ "${{ steps.ruff-sort.outcome }}" == "success" ]]; then echo "sort: ok"; else echo "sort: fail"; fi
+          if [[ "${{ steps.ruff-format.outcome }}" == "success" ]]; then echo "format: ok"; else echo "format: fail"; fi
+          if [[ "${{ steps.ruff-sort.outcome }}" == "failure" || "${{ steps.ruff-format.outcome }}" == "failure" ]]; then exit 1; fi
+
+      - name: Print formatting instructions
+        if: ${{ failure() }}
+        run: |
+          echo "Run the following commands to format the code:"
+          echo "uv run ruff check --fix"
+          echo "uv run ruff format"

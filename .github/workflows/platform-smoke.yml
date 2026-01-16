@@ -1,0 +1,193 @@
+name: Platform Smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: platform-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  native-runners:
+    name: Native runners (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+          - os: ubuntu-24.04-arm
+          - os: macos-15-intel
+          - os: macos-15
+          - os: windows-2022
+            msystem: MSYS
+          - os: windows-11-arm
+            msystem: MSYS
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Smoke test (POSIX sh)
+        if: ${{ !matrix.msystem }}
+        run: |
+          set -euo pipefail
+          out="$(sh scripts/get_native_properties.sh)"
+          test -n "$out"
+          printf '%s\n' "$out"
+
+      - name: Dump uname + CPU feature info (native)
+        if: ${{ !matrix.msystem }}
+        run: |
+          set -euo pipefail
+          echo "--- uname (script inputs) ---"
+          echo "uname -s: $(uname -s || true)"
+          echo "uname -m: $(uname -m || true)"
+          echo "--- uname -a ---"
+          uname -a || true
+          if [ "$(uname -s || true)" = "Darwin" ]; then
+            echo "--- sysctl (what the script uses on macOS Intel) ---"
+            echo "sysctl -n machdep.cpu.features:"
+            sysctl -n machdep.cpu.features 2>/dev/null || true
+            echo "sysctl -n machdep.cpu.leaf7_features:"
+            sysctl -n machdep.cpu.leaf7_features 2>/dev/null || true
+            echo "--- sysctl hw.optional (useful on Apple Silicon) ---"
+            sysctl -a 2>/dev/null | grep '^hw.optional\.' || true
+          else
+            echo "--- /proc/cpuinfo ---"
+            cat /proc/cpuinfo || true
+          fi
+
+      - name: Setup MSYS2 (Windows)
+        if: ${{ matrix.msystem }}
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: false
+
+      - name: Smoke test (MSYS2)
+        if: ${{ matrix.os == 'windows-2022' }}
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          out="$(sh scripts/get_native_properties.sh)"
+          test -n "$out"
+          printf '%s\n' "$out"
+
+      - name: Dump uname + /proc/cpuinfo (MSYS2)
+        if: ${{ matrix.os == 'windows-2022' }}
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          echo "--- uname (script inputs) ---"
+          echo "uname -s: $(uname -s || true)"
+          echo "uname -m: $(uname -m || true)"
+          echo "--- uname -a ---"
+          uname -a || true
+          echo "--- /proc/cpuinfo ---"
+          cat /proc/cpuinfo || true
+
+      - name: Smoke test (MSYS2 ARM64)
+        if: ${{ matrix.os == 'windows-11-arm' }}
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          out="$(sh scripts/get_native_properties.sh)"
+          test -n "$out"
+          printf '%s\n' "$out"
+
+      - name: Dump uname + /proc/cpuinfo (MSYS2 ARM64)
+        if: ${{ matrix.os == 'windows-11-arm' }}
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          echo "--- uname (script inputs) ---"
+          echo "uname -s: $(uname -s || true)"
+          echo "uname -m: $(uname -m || true)"
+          echo "--- uname -a ---"
+          uname -a || true
+          echo "--- /proc/cpuinfo ---"
+          cat /proc/cpuinfo || true
+
+  qemu-linux:
+    name: QEMU linux containers (${{ matrix.platform }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            image: debian:stable-slim
+            bits: 64
+          - platform: linux/386
+            image: i386/debian:stable-slim
+            bits: 32
+          - platform: linux/arm64
+            image: arm64v8/debian:stable-slim
+            bits: 64
+          - platform: linux/arm/v5
+            image: arm32v5/debian:stable-slim
+            bits: 32
+          - platform: linux/arm/v6
+            image: arm32v6/alpine:latest
+            bits: 32
+          - platform: linux/arm/v7
+            image: arm32v7/debian:stable-slim
+            bits: 32
+          - platform: linux/ppc64le
+            image: ppc64le/debian:stable-slim
+            bits: 64
+          - platform: linux/riscv64
+            image: riscv64/debian:stable-slim
+            bits: 64
+          - platform: linux/s390x
+            image: s390x/debian:stable-slim
+            bits: 64
+          - platform: linux/mips64le
+            image: mips64le/debian:stable-slim
+            bits: 64
+          - platform: linux/loong64
+            image: loongarch64/busybox:latest
+            bits: 64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Run script in emulated container
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          IMAGE: ${{ matrix.image }}
+          GP_BITS: ${{ matrix.bits }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --platform "$PLATFORM" \
+            -e GP_BITS="$GP_BITS" \
+            -v "$GITHUB_WORKSPACE":/work \
+            -w /work \
+            "$IMAGE" \
+            sh -euxc 'out="$(sh scripts/get_native_properties.sh)"; test -n "$out"; printf "%s\n" "$out"'
+
+      - name: Dump uname + /proc/cpuinfo (emulated)
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          IMAGE: ${{ matrix.image }}
+          GP_BITS: ${{ matrix.bits }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --platform "$PLATFORM" \
+            -e GP_BITS="$GP_BITS" \
+            -v "$GITHUB_WORKSPACE":/work \
+            -w /work \
+            "$IMAGE" \
+            sh -euxc 'echo "--- uname (script inputs) ---"; echo "uname -s: $(uname -s || true)"; echo "uname -m: $(uname -m || true)"; echo "--- uname -a ---"; uname -a || true; echo "--- /proc/cpuinfo ---"; cat /proc/cpuinfo'
