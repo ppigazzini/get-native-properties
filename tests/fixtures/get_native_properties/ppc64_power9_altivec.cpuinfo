@@ -1,0 +1,2 @@
+cpu		: POWER9
+flags		: altivec
